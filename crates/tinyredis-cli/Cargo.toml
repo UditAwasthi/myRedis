@@ -1,0 +1,18 @@
+[package]
+name = "tinyredis-cli"
+description = "Interactive CLI client for TinyRedis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "tinyredis-cli"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+tokio = { workspace = true }
+tinyredis-protocol = { workspace = true }

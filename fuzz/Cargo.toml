@@ -1,0 +1,43 @@
+[package]
+name = "tinyredis-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "fuzz_resp_decoder"
+path = "fuzz_targets/fuzz_resp_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_command_parser"
+path = "fuzz_targets/fuzz_command_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_snapshot_parser"
+path = "fuzz_targets/fuzz_snapshot_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_replication_parser"
+path = "fuzz_targets/fuzz_replication_parser.rs"
+test = false
+doc = false
+bench = false
+
+[dependencies]
+libfuzzer-sys = "0.4"
+bytes = "1"
+tinyredis-core = { path = "../crates/tinyredis-core" }
+tinyredis-protocol = { path = "../crates/tinyredis-protocol" }
+tinyredis-server = { path = "../crates/tinyredis-server" }

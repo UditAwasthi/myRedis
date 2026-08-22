@@ -1,0 +1,32 @@
+services:
+  tinyredis:
+    build: .
+    ports:
+      - "6379:6379"
+      - "6380:6380"
+    environment:
+      TINYREDIS_HOST: 0.0.0.0
+      TINYREDIS_PORT: 6379
+      TINYREDIS_DATA_DIR: /data
+      TINYREDIS_LOG_LEVEL: info
+    volumes:
+      - tinyredis-data:/data
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:11.1.4
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    depends_on:
+      - prometheus
+
+volumes:
+  tinyredis-data:

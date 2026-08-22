@@ -1,0 +1,21 @@
+[package]
+name = "tinyredis-protocol"
+description = "RESP-inspired protocol codec for TinyRedis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+bytes = { workspace = true }
+thiserror = { workspace = true }
+tinyredis-core = { workspace = true }
+
+[dev-dependencies]
+bytes = { workspace = true }
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "protocol"
+harness = false

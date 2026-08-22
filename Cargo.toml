@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tinyredis-core",
+    "crates/tinyredis-protocol",
+    "crates/tinyredis-server",
+    "crates/tinyredis-cli",
+    "tests",
+]
+default-members = ["crates/tinyredis-server"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["TinyRedis Contributors"]
+repository = "https://github.com/example/tinyredis"
+
+[workspace.dependencies]
+anyhow = "1"
+bytes = "1"
+clap = { version = "4", features = ["derive", "env"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+prometheus = "0.13"
+proptest = "1"
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["full"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+argon2 = "0.5"
+password-hash = "0.5"
+dashmap = "6"
+parking_lot = "0.12"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["codec"] }
+tinyredis-core = { path = "crates/tinyredis-core" }
+tinyredis-protocol = { path = "crates/tinyredis-protocol" }
+
+[profile.release]
+lto = true
+codegen-units = 1

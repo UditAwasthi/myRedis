@@ -1,0 +1,8 @@
+/target/
+**/*.rs.bk
+*.pdb
+Cargo.lock
+.env
+.env.*
+!.env.example
+docs/
