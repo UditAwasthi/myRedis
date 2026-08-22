@@ -265,7 +265,11 @@ impl Database {
         }
     }
 
-    pub fn expire_active_sample(&mut self, sample_size: usize) -> usize {
+    pub fn expire_active_sample(&mut self) -> usize {
+        let sample_size = self.expiration.active_sample_size;
+        if sample_size == 0 {
+            return 0;
+        }
         let keys: Vec<String> = self
             .data
             .keys()

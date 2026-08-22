@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use bytes::BytesMut;
@@ -9,7 +9,8 @@ use tinyredis_protocol::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc};
+use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::warn;
 
@@ -47,14 +48,35 @@ async fn handle_connection_inner(
     let mut conn = ConnectionContext::new();
 
     loop {
-        let read_result = timeout(timeout_duration, stream.read_buf(&mut buf)).await;
-        match read_result {
-            Ok(Ok(0)) => break,
-            Ok(Ok(_)) => {}
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => {
-                let _ = stream.write_all(&encode_error("ERR timeout")).await;
-                break;
+        if !conn.has_subscriptions() {
+            let read_result = timeout(timeout_duration, stream.read_buf(&mut buf)).await;
+            match read_result {
+                Ok(Ok(0)) => break,
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => {
+                    let _ = stream.write_all(&encode_error("ERR timeout")).await;
+                    break;
+                }
+            }
+        } else {
+            tokio::select! {
+                read_result = timeout(timeout_duration, stream.read_buf(&mut buf)) => {
+                    match read_result {
+                        Ok(Ok(0)) => break,
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => return Err(e.into()),
+                        Err(_) => {
+                            let _ = stream.write_all(&encode_error("ERR timeout")).await;
+                            break;
+                        }
+                    }
+                }
+                msg = wait_pubsub_message(&mut conn) => {
+                    if let Some((channel, message)) = msg {
+                        write_pubsub_message(&mut stream, &channel, &message).await?;
+                    }
+                }
             }
         }
 
@@ -107,7 +129,12 @@ struct ConnectionContext {
     authenticated: bool,
     txn: TransactionManager,
     pubsub_mode: bool,
-    subscriptions: HashMap<String, broadcast::Receiver<String>>,
+    subscriptions: HashSet<String>,
+    pubsub_delivery: Option<(
+        mpsc::UnboundedSender<(String, String)>,
+        mpsc::UnboundedReceiver<(String, String)>,
+    )>,
+    pubsub_forwarders: HashMap<String, JoinHandle<()>>,
 }
 
 impl ConnectionContext {
@@ -116,8 +143,56 @@ impl ConnectionContext {
             authenticated: false,
             txn: TransactionManager::new(),
             pubsub_mode: false,
-            subscriptions: HashMap::new(),
+            subscriptions: HashSet::new(),
+            pubsub_delivery: None,
+            pubsub_forwarders: HashMap::new(),
         }
+    }
+
+    fn has_subscriptions(&self) -> bool {
+        !self.subscriptions.is_empty()
+    }
+}
+
+fn pubsub_outbox(conn: &mut ConnectionContext) -> mpsc::UnboundedSender<(String, String)> {
+    if conn.pubsub_delivery.is_none() {
+        let (tx, rx) = mpsc::unbounded_channel();
+        conn.pubsub_delivery = Some((tx.clone(), rx));
+    }
+    conn.pubsub_delivery.as_ref().unwrap().0.clone()
+}
+
+fn start_pubsub_forwarder(conn: &mut ConnectionContext, state: &SharedAppState, channel: &str) {
+    if conn.subscriptions.contains(channel) {
+        return;
+    }
+
+    let outbox = pubsub_outbox(conn);
+    let mut rx = state.pubsub.subscribe(channel);
+    let channel_name = channel.to_string();
+    let handle = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(message) => {
+                    if outbox.send((channel_name.clone(), message)).is_err() {
+                        break;
+                    }
+                }
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+    conn.pubsub_forwarders.insert(channel.to_string(), handle);
+    conn.subscriptions.insert(channel.to_string());
+}
+
+fn stop_pubsub_forwarder(conn: &mut ConnectionContext, state: &SharedAppState, channel: &str) {
+    if conn.subscriptions.remove(channel) {
+        if let Some(handle) = conn.pubsub_forwarders.remove(channel) {
+            handle.abort();
+        }
+        state.pubsub.unsubscribe(channel);
     }
 }
 
@@ -234,20 +309,25 @@ async fn dispatch_command(
             Ok(CommandResult::Status("OK".into()))
         }
         Command::Exec => {
-            let mut db = state.db.write().await;
-            match conn.txn.exec(&mut db) {
-                Ok(cmds) => {
-                    let mut results = Vec::with_capacity(cmds.len());
-                    for queued in cmds {
-                        let result = apply_mutating_command(state, &mut db, queued)?;
-                        results.push(result_to_bulk(result));
+            let (result, refresh) = {
+                let mut db = state.db.write().await;
+                match conn.txn.exec(&mut db) {
+                    Ok(cmds) => {
+                        let mut results = Vec::with_capacity(cmds.len());
+                        for queued in cmds {
+                            let result = apply_mutating_command(state, &mut db, queued).await?;
+                            results.push(result_to_bulk(result));
+                        }
+                        (CommandResult::Array(results), true)
                     }
-                    state.refresh_memory_metric();
-                    Ok(CommandResult::Array(results))
+                    Err(CoreError::WatchConflict) => (CommandResult::BulkString(None), false),
+                    Err(e) => (CommandResult::Error(format!("ERR {e}")), false),
                 }
-                Err(CoreError::WatchConflict) => Ok(CommandResult::BulkString(None)),
-                Err(e) => Ok(CommandResult::Error(format!("ERR {e}"))),
+            };
+            if refresh {
+                state.refresh_memory_metric().await;
             }
+            Ok(result)
         }
         Command::Subscribe(channels) => handle_subscribe(conn, state, channels).await,
         Command::Unsubscribe(channels) => handle_unsubscribe(conn, state, channels).await,
@@ -291,15 +371,17 @@ async fn dispatch_command(
                     return Ok(CommandResult::Error(format!("ERR {e}")));
                 }
             }
-            let mut db = state.db.write().await;
-            let result = apply_mutating_command(state, &mut db, other)?;
-            state.refresh_memory_metric();
+            let result = {
+                let mut db = state.db.write().await;
+                apply_mutating_command(state, &mut db, other).await?
+            };
+            state.refresh_memory_metric().await;
             Ok(result)
         }
     }
 }
 
-fn apply_mutating_command(
+async fn apply_mutating_command(
     state: &SharedAppState,
     db: &mut tinyredis_core::Database,
     cmd: Command,
@@ -308,7 +390,7 @@ fn apply_mutating_command(
         if let Err(e) = state.replication.assert_writable() {
             return Ok(CommandResult::Error(format!("ERR {e}")));
         }
-        if let Err(e) = route_cluster_key(state, &cmd) {
+        if let Err(e) = route_cluster_key(state, &cmd).await {
             return Ok(CommandResult::Error(format!("ERR {e}")));
         }
     }
@@ -325,12 +407,12 @@ fn apply_mutating_command(
     Ok(result)
 }
 
-fn route_cluster_key(state: &SharedAppState, cmd: &Command) -> Result<(), CoreError> {
+async fn route_cluster_key(state: &SharedAppState, cmd: &Command) -> Result<(), CoreError> {
     if !state.config.cluster.enabled {
         return Ok(());
     }
     if let Some(key) = primary_key(cmd) {
-        let router = state.cluster.blocking_read();
+        let router = state.cluster.read().await;
         if !router.is_local_key(&key) {
             let node = router.route(&key)?;
             return Err(CoreError::Internal(format!("MOVED to {}", node.address)));
@@ -426,15 +508,14 @@ async fn handle_subscribe(
 ) -> anyhow::Result<CommandResult> {
     conn.pubsub_mode = true;
     let targets = if channels.is_empty() {
-        conn.subscriptions.keys().cloned().collect()
+        conn.subscriptions.iter().cloned().collect()
     } else {
         channels
     };
 
     let mut response_items = Vec::new();
     for channel in targets {
-        let rx = state.pubsub.subscribe(&channel);
-        conn.subscriptions.insert(channel.clone(), rx);
+        start_pubsub_forwarder(conn, state, &channel);
         response_items.push("subscribe".to_string());
         response_items.push(channel);
         response_items.push("1".to_string());
@@ -448,15 +529,14 @@ async fn handle_unsubscribe(
     channels: Vec<String>,
 ) -> anyhow::Result<CommandResult> {
     let targets: Vec<String> = if channels.is_empty() {
-        conn.subscriptions.keys().cloned().collect()
+        conn.subscriptions.iter().cloned().collect()
     } else {
         channels
     };
 
     let mut response_items = Vec::new();
     for channel in targets {
-        conn.subscriptions.remove(&channel);
-        state.pubsub.unsubscribe(&channel);
+        stop_pubsub_forwarder(conn, state, &channel);
         response_items.push("unsubscribe".to_string());
         response_items.push(channel);
         response_items.push("0".to_string());
@@ -498,27 +578,25 @@ async fn handle_pubsub_frame(
         }
     }
 
-    drain_pubsub_messages(conn, stream).await?;
     Ok(true)
 }
 
-async fn drain_pubsub_messages(
-    conn: &mut ConnectionContext,
+async fn wait_pubsub_message(conn: &mut ConnectionContext) -> Option<(String, String)> {
+    conn.pubsub_delivery.as_mut()?.1.recv().await
+}
+
+async fn write_pubsub_message(
     stream: &mut TcpStream,
+    channel: &str,
+    message: &str,
 ) -> anyhow::Result<()> {
-    let channels: Vec<String> = conn.subscriptions.keys().cloned().collect();
-    for channel in channels {
-        if let Some(rx) = conn.subscriptions.get_mut(&channel) {
-            while let Ok(message) = rx.try_recv() {
-                let frame = RespFrame::Array(vec![
-                    RespFrame::Bulk(Some(b"message".to_vec())),
-                    RespFrame::Bulk(Some(channel.as_bytes().to_vec())),
-                    RespFrame::Bulk(Some(message.into_bytes())),
-                ]);
-                stream.write_all(&encode_frame(&frame)).await?;
-            }
-        }
-    }
+    let frame = RespFrame::Array(vec![
+        RespFrame::Bulk(Some(b"message".to_vec())),
+        RespFrame::Bulk(Some(channel.as_bytes().to_vec())),
+        RespFrame::Bulk(Some(message.as_bytes().to_vec())),
+    ]);
+    stream.write_all(&encode_frame(&frame)).await?;
+    stream.flush().await?;
     Ok(())
 }
 

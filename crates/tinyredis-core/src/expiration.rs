@@ -2,9 +2,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct ExpirationPolicy {
     pub active_sample_size: usize,
+}
+
+impl Default for ExpirationPolicy {
+    fn default() -> Self {
+        Self {
+            active_sample_size: 20,
+        }
+    }
 }
 
 impl ExpirationPolicy {

@@ -26,34 +26,51 @@ async fn main() -> Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
+    let mut read_buf = bytes::BytesMut::with_capacity(4096);
+    let decoder = RespDecoder::new();
+
+    print_prompt(&prompt);
 
     loop {
-        print!("{prompt}");
-        use std::io::Write;
-        std::io::stdout().flush().ok();
+        tokio::select! {
+            read_result = reader.read_line(&mut line) => {
+                let n = read_result?;
+                if n == 0 {
+                    break;
+                }
 
-        line.clear();
-        let n = reader.read_line(&mut line).await?;
-        if n == 0 {
-            break;
+                let input = line.trim();
+                if input.is_empty() {
+                    print_prompt(&prompt);
+                    continue;
+                }
+                if input.eq_ignore_ascii_case("quit") || input.eq_ignore_ascii_case("exit") {
+                    break;
+                }
+
+                let frame = build_command_frame(input);
+                stream.write_all(&encode_frame(&frame)).await?;
+            }
+            read_n = stream.read_buf(&mut read_buf) => {
+                let n = read_n?;
+                if n == 0 {
+                    anyhow::bail!("connection closed");
+                }
+                while let Some(frame) = decoder.decode(&mut read_buf)? {
+                    println!("{}", format_frame(&frame));
+                }
+                print_prompt(&prompt);
+            }
         }
-
-        let input = line.trim();
-        if input.is_empty() {
-            continue;
-        }
-        if input.eq_ignore_ascii_case("quit") || input.eq_ignore_ascii_case("exit") {
-            break;
-        }
-
-        let frame = build_command_frame(input);
-        stream.write_all(&encode_frame(&frame)).await?;
-
-        let response = read_response(&mut stream).await?;
-        println!("{response}");
     }
 
     Ok(())
+}
+
+fn print_prompt(prompt: &str) {
+    use std::io::Write;
+    print!("{prompt}");
+    std::io::stdout().flush().ok();
 }
 
 fn build_command_frame(input: &str) -> RespFrame {
@@ -63,21 +80,6 @@ fn build_command_frame(input: &str) -> RespFrame {
         .map(|p| RespFrame::Bulk(Some(p.as_bytes().to_vec())))
         .collect();
     RespFrame::Array(items)
-}
-
-async fn read_response(stream: &mut TcpStream) -> Result<String> {
-    let mut buf = bytes::BytesMut::with_capacity(4096);
-    let decoder = RespDecoder::new();
-
-    loop {
-        let n = stream.read_buf(&mut buf).await?;
-        if n == 0 {
-            anyhow::bail!("connection closed");
-        }
-        if let Some(frame) = decoder.decode(&mut buf)? {
-            return Ok(format_frame(&frame));
-        }
-    }
 }
 
 fn format_frame(frame: &RespFrame) -> String {

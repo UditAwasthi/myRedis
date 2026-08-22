@@ -8,17 +8,13 @@ fn bench_snapshot_serialize(c: &mut Criterion) {
         for i in 0..key_count {
             db.set(format!("key:{i}"), format!("value:{i}")).unwrap();
         }
-        group.bench_with_input(
-            BenchmarkId::from_parameter(key_count),
-            &db,
-            |b, db| {
-                b.iter(|| {
-                    let data = db.snapshot_data();
-                    let json = serde_json::to_vec(&data).unwrap();
-                    black_box(json);
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::from_parameter(key_count), &db, |b, db| {
+            b.iter(|| {
+                let data = db.snapshot_data();
+                let json = serde_json::to_vec(&data).unwrap();
+                black_box(json);
+            });
+        });
     }
     group.finish();
 }
@@ -41,5 +37,9 @@ fn bench_snapshot_deserialize(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_snapshot_serialize, bench_snapshot_deserialize);
+criterion_group!(
+    benches,
+    bench_snapshot_serialize,
+    bench_snapshot_deserialize
+);
 criterion_main!(benches);

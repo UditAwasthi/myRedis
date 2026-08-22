@@ -43,7 +43,7 @@ impl PubSubHub {
     pub fn publish(&self, channel: &str, message: &str) -> usize {
         match self.channels.get(channel) {
             Some(sender) => {
-                let count = sender.receiver_count().saturating_sub(1);
+                let count = sender.receiver_count();
                 if sender.send(message.to_string()).is_err() {
                     debug!(channel, "publish with no active subscribers");
                     return 0;

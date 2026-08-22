@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    state.refresh_memory_metric();
+    state.refresh_memory_metric().await;
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 

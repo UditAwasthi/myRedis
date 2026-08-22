@@ -79,8 +79,8 @@ impl AppState {
         self.metrics.set_connected_clients(count as i64);
     }
 
-    pub fn refresh_memory_metric(&self) {
-        let stats = self.db.blocking_read().memory_stats();
+    pub async fn refresh_memory_metric(&self) {
+        let stats = self.db.read().await.memory_stats();
         self.metrics.set_memory_bytes(stats.used_bytes as i64);
     }
 }

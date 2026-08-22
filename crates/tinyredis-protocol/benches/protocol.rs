@@ -1,9 +1,7 @@
 use bytes::BytesMut;
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use tinyredis_core::Command;
-use tinyredis_protocol::{
-    encode_frame, parse_command, RespDecoder, RespFrame,
-};
+use tinyredis_protocol::{encode_frame, parse_command, RespDecoder, RespFrame};
 
 fn sample_command_frame() -> RespFrame {
     RespFrame::Array(vec![

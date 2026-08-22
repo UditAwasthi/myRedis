@@ -52,10 +52,7 @@ fn bench_incr(c: &mut Criterion) {
     db.set("counter".into(), "0".into()).unwrap();
     c.bench_function("incr", |b| {
         b.iter(|| {
-            let result = execute(
-                &mut db,
-                &Command::Incr("counter".into()),
-            );
+            let result = execute(&mut db, &Command::Incr("counter".into()));
             black_box(result);
         });
     });
@@ -130,7 +127,7 @@ fn bench_expiration(c: &mut Criterion) {
         b.iter(|| black_box(db.ttl("temp").unwrap()));
     });
     c.bench_function("expire_active_sample", |b| {
-        b.iter(|| black_box(db.expire_active_sample(16)));
+        b.iter(|| black_box(db.expire_active_sample()));
     });
 }
 
